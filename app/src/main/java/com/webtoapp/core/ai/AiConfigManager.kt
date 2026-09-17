@@ -278,8 +278,11 @@ class AiConfigManager(private val context: Context) {
         val encrypted = try {
             encrypt(plainJson)
         } catch (e: Exception) {
-            AppLogger.w(TAG, "Encryption failed, storing plain JSON fallback", e)
-            return plainJson
+            // FAIL-CLOSED: never persist plaintext API keys. Throwing aborts
+            // the DataStore edit atomically; the public save wrappers convert
+            // this to a failed save instead of a silent plaintext write.
+            AppLogger.e(TAG, "API key encryption failed, aborting write", e)
+            throw IllegalStateException("API key encryption failed, refusing plaintext fallback", e)
         }
         return "$ENCRYPTED_PREFIX$encrypted"
     }
