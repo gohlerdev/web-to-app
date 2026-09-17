@@ -101,6 +101,53 @@ class DownloadFallbackPolicyTest {
     }
 
     @Test
+    fun `corrupt source drops tmp and switches without retrying the same url`() = runBlocking {
+        val (destFile, tmpFile) = dest()
+        tmpFile.writeBytes(ByteArray(64))
+        val calls = mutableListOf<String>()
+
+        val ok = engine().downloadFileWithFallback(
+            listOf("https://poisoned/proxied", "https://good/proxied"),
+            destFile, "Unit", null,
+            maxRetryPerUrl = 2, retryDelayMs = 0,
+            fetch = { url, _ ->
+                calls.add(url)
+                if (url.endsWith("poisoned/proxied")) {
+                    DependencyDownloadEngine.Outcome.CORRUPT
+                } else {
+                    // Wrong bytes cannot be fixed by re-requesting them: the
+                    // poisoned source's fully-downloaded tmp must be discarded
+                    // before this source starts (single-call is asserted below).
+                    assertThat(tmpFile.exists()).isFalse()
+                    DependencyDownloadEngine.Outcome.SUCCESS
+                }
+            }
+        )
+        assertThat(ok).isTrue()
+        assertThat(calls).containsExactly("https://poisoned/proxied", "https://good/proxied").inOrder()
+    }
+
+    @Test
+    fun `corrupt on the last source fails without retry and reports the error`() = runBlocking {
+        val (destFile, _) = dest()
+        var calls = 0
+
+        val ok = engine().downloadFileWithFallback(
+            listOf("https://only/proxied"),
+            destFile, "Unit", null,
+            maxRetryPerUrl = 3, retryDelayMs = 0,
+            fetch = { _, _ ->
+                calls++
+                DependencyDownloadEngine.Outcome.CORRUPT
+            }
+        )
+        assertThat(ok).isFalse()
+        assertThat(calls).isEqualTo(1)
+        assertThat(engine().state.value).isInstanceOf(DependencyDownloadEngine.State.Error::class.java)
+        engine().reset()
+    }
+
+    @Test
     fun `success on first try makes a single call`() = runBlocking {
         val (destFile, _) = dest()
         var calls = 0
@@ -112,5 +159,13 @@ class DownloadFallbackPolicyTest {
         )
         assertThat(ok).isTrue()
         assertThat(calls).isEqualTo(1)
+    }
+
+    @Test
+    fun `sha256Of computes the streaming digest`() {
+        val f = tmp.newFile("hash.bin")
+        f.writeBytes("abc".toByteArray(Charsets.US_ASCII))
+        assertThat(engine().sha256Of(f))
+            .isEqualTo("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
     }
 }

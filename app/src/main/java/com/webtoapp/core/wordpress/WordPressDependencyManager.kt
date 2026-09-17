@@ -32,6 +32,40 @@ object WordPressDependencyManager {
 
     private val PHP_GITHUB_URL = "https://github.com/pmmp/PHP-Binaries/releases/download/pm5-php-${PHP_VERSION}-latest/PHP-${PHP_VERSION}-Android-arm64-PM5.tar.gz"
 
+    /**
+     * SHA-256 of PHP-${PHP_VERSION}-Android-arm64-PM5.tar.gz (GitHub release
+     * `pm5-php-${PHP_VERSION}-latest` digest). NOTE: the tag is MOVING — pmmp
+     * re-cuts it periodically. The pin intentionally freezes the observed cut:
+     * a re-cut fails the digest loudly instead of silently shipping different
+     * bytes; bump the digest together with PHP_VERSION when that happens.
+     */
+    private const val PHP_TARBALL_SHA256 =
+        "d8867966340121f821591b9bb29c80a58ad77abd6cc8e0e44d1cbbb3aaedd70c"
+
+    /** SHA-256 of wordpress-${WORDPRESS_VERSION}.tar.gz (wordpress.org). */
+    private const val WORDPRESS_CORE_EN_SHA256 =
+        "530c8fdeb16fb0affdb53eb727b6a04bb8d166621c20029e389cabb01a0fa921"
+
+    /** SHA-256 of wordpress-${WORDPRESS_VERSION}-zh_CN.tar.gz (cn.wordpress.org). */
+    private const val WORDPRESS_CORE_ZH_CN_SHA256 =
+        "4588f0a11feddf1b0decce1ea52a37b9d8108bf0601dafb1b37d35e0874ea38e"
+
+    /** SHA-256 of sqlite-database-integration.${SQLITE_PLUGIN_VERSION}.zip. */
+    private const val SQLITE_PLUGIN_ZIP_SHA256 =
+        "44be096a14ebcea424b5e4bf764436ec85fb067f74ab47822c4c5346df21591e"
+
+    /**
+     * Pin resolver for the WordPress core URL list: exact-version URLs are
+     * pinned (zh_CN vs global digest); `latest` fallbacks are moving targets
+     * and stay unpinned — they only run when every pinned source already
+     * failed.
+     */
+    private fun wordpressCoreSha256For(url: String): String? = when {
+        "latest" in url -> null
+        "zh_CN" in url -> WORDPRESS_CORE_ZH_CN_SHA256
+        else -> WORDPRESS_CORE_EN_SHA256
+    }
+
     data class MirrorConfig(
 
         val phpUrls: List<String>,
@@ -285,17 +319,19 @@ object WordPressDependencyManager {
         urls: List<String>,
         destFile: File,
         displayName: String,
-        context: Context?
+        context: Context?,
+        expectedSha256For: ((url: String) -> String?)? = null
     ): Boolean = DependencyDownloadEngine.downloadFileWithFallback(
-        urls, destFile, displayName, context, MAX_RETRY_PER_URL, RETRY_DELAY_MS
+        urls, destFile, displayName, context, MAX_RETRY_PER_URL, RETRY_DELAY_MS, expectedSha256For
     )
 
     private suspend fun downloadWithRetry(
         url: String,
         destFile: File,
         displayName: String,
-        context: Context?
-    ): Boolean = downloadWithRetry(listOf(url), destFile, displayName, context)
+        context: Context?,
+        expectedSha256For: ((url: String) -> String?)? = null
+    ): Boolean = downloadWithRetry(listOf(url), destFile, displayName, context, expectedSha256For)
 
     private suspend fun downloadPhp(context: Context, mirror: MirrorConfig): Boolean {
         val abi = getDeviceAbi()
@@ -312,7 +348,7 @@ object WordPressDependencyManager {
 
         AppLogger.i(TAG, "Downloading PHP binary (${phpUrls.size} sources)")
 
-        val downloaded = downloadWithRetry(phpUrls, archiveFile, "PHP $PHP_VERSION ($abi)", context)
+        val downloaded = downloadWithRetry(phpUrls, archiveFile, "PHP $PHP_VERSION ($abi)", context) { _ -> PHP_TARBALL_SHA256 }
         syncEngineState()
         if (!downloaded) return false
 
@@ -362,7 +398,7 @@ object WordPressDependencyManager {
 
         AppLogger.i(TAG, "Downloading WordPress core (${wpUrls.size} sources)")
 
-        val downloaded = downloadWithRetry(wpUrls, archiveFile, "WordPress $WORDPRESS_VERSION", context)
+        val downloaded = downloadWithRetry(wpUrls, archiveFile, "WordPress $WORDPRESS_VERSION", context, ::wordpressCoreSha256For)
         syncEngineState()
         if (!downloaded) return false
 
@@ -395,7 +431,7 @@ object WordPressDependencyManager {
 
         AppLogger.i(TAG, "Downloading SQLite plugin: $url")
 
-        val downloaded = downloadWithRetry(url, archiveFile, "SQLite Plugin $SQLITE_PLUGIN_VERSION", context)
+        val downloaded = downloadWithRetry(url, archiveFile, "SQLite Plugin $SQLITE_PLUGIN_VERSION", context) { _ -> SQLITE_PLUGIN_ZIP_SHA256 }
         syncEngineState()
         if (!downloaded) return false
 

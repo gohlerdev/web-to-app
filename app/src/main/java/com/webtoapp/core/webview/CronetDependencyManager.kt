@@ -53,6 +53,14 @@ object CronetDependencyManager {
 
     private fun downloadUrls(): List<String> = listOf(CN_MIRROR_URL, PRIMARY_URL)
 
+    /**
+     * SHA-256 of cronet-embedded-$CRONET_ARTIFACT_VERSION.aar (canonical bytes
+     * from Google Maven; Aliyun mirrors the same artifact). Recompute when
+     * bumping CRONET_ARTIFACT_VERSION — mismatches fail the download loudly.
+     */
+    private const val CRONET_AAR_SHA256 =
+        "afdd7af7568e9758e3690c3a4a228f30993ac3e4ef0f94c72bb68503c0167697"
+
     fun getDepsDir(context: Context): File =
         File(context.filesDir, "cronet_deps").also { it.mkdirs() }
 
@@ -99,7 +107,8 @@ object CronetDependencyManager {
                     displayName = "Cronet $CRONET_ARTIFACT_VERSION",
                     context = context,
                     maxRetryPerUrl = MAX_RETRY_PER_URL,
-                    retryDelayMs = RETRY_DELAY_MS
+                    retryDelayMs = RETRY_DELAY_MS,
+                    expectedSha256For = { _ -> CRONET_AAR_SHA256 }
                 )
             } catch (e: Exception) {
                 AppLogger.e(TAG, "Cronet download failed", e)

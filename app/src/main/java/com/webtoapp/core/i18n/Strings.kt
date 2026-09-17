@@ -4018,6 +4018,7 @@ object Strings {
     val downloadFailedHttp: String get() = StringsE.downloadFailedHttp
     val downloadReturnedEmpty: String get() = StringsE.downloadReturnedEmpty
     val downloadNameFailed: String get() = StringsE.downloadNameFailed
+    val downloadIntegrityFailed: String get() = StringsE.downloadIntegrityFailed
     val sizeUnknown: String get() = StringsE.sizeUnknown
     val saveFailedNoHtmlInZip: String get() = StringsE.saveFailedNoHtmlInZip
     val suggestUseRelativePath: String get() = StringsE.suggestUseRelativePath
@@ -55467,6 +55468,19 @@ object StringsE {
         AppLanguage.RUSSIAN -> "Ошибка загрузки %s: %s"
         AppLanguage.JAPANESE -> "%s のダウンロード失敗: %s"
         AppLanguage.KOREAN -> "%s 다운로드 실패: %s"
+    }
+
+    val downloadIntegrityFailed: String get() = when (Strings.lang) {
+        AppLanguage.CHINESE -> "下载 %s 失败: 完整性校验未通过 (SHA-256 不匹配)，已丢弃文件"
+        AppLanguage.ENGLISH -> "Download %s failed: integrity check failed (SHA-256 mismatch), file discarded"
+        AppLanguage.ARABIC -> "فشل تنزيل %s: فشل التحقق من السلامة (عدم تطابق SHA-256)، تم حذف الملف"
+        AppLanguage.PORTUGUESE -> "Download %s falhou: verificação de integridade falhou (SHA-256 divergente), arquivo descartado"
+        AppLanguage.SPANISH -> "Descarga de %s fallida: la verificación de integridad falló (SHA-256 no coincide), archivo descartado"
+        AppLanguage.FRENCH -> "Téléchargement de %s échoué : échec de la vérification d'intégrité (SHA-256 différent), fichier ignoré"
+        AppLanguage.GERMAN -> "Download von %s fehlgeschlagen: Integritätsprüfung fehlgeschlagen (SHA-256 stimmt nicht überein), Datei verworfen"
+        AppLanguage.RUSSIAN -> "Ошибка загрузки %s: проверка целостности не пройдена (несовпадение SHA-256), файл удалён"
+        AppLanguage.JAPANESE -> "%s のダウンロードに失敗しました: 整合性チェック失敗 (SHA-256 不一致)、ファイルを破棄しました"
+        AppLanguage.KOREAN -> "%s 다운로드 실패: 무결성 검사 실패 (SHA-256 불일치), 파일이 삭제되었습니다"
     }
 
     val sizeUnknown: String get() = when (Strings.lang) {

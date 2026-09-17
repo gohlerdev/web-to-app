@@ -31,6 +31,14 @@ object NodeDependencyManager {
     // alignment (upstream `release18-20-4+16kb-fix` branch) — no runtime ELF rewrite needed.
     private val NODE_GITHUB_URL = "https://github.com/capawesome-team/nodejs-mobile/releases/download/v18.20.4-capawesome.1/nodejs-mobile-v18.20.4-capawesome.1-android.zip"
 
+    /**
+     * SHA-256 of nodejs-mobile-v18.20.4-capawesome.1-android.zip.
+     * Verify with `shasum -a 256 <zip>` against the GitHub release when bumping
+     * [NODE_GITHUB_URL] / NODE_VERSION — mismatches fail the download loudly.
+     */
+    private const val NODE_ZIP_SHA256 =
+        "1b3c7979c81aec89a7f51b29af1f4875a5d637727ad6e2c392cdf2e127715da9"
+
     data class MirrorConfig(
 
         val nodeUrls: List<String>
@@ -308,9 +316,11 @@ object NodeDependencyManager {
         urls: List<String>,
         destFile: File,
         displayName: String,
-        context: Context?
+        context: Context?,
+        expectedSha256: String? = null
     ): Boolean = DependencyDownloadEngine.downloadFileWithFallback(
-        urls, destFile, displayName, context, MAX_RETRY_PER_URL, RETRY_DELAY_MS
+        urls, destFile, displayName, context, MAX_RETRY_PER_URL, RETRY_DELAY_MS,
+        expectedSha256For = expectedSha256?.let { hash -> { _: String -> hash } }
     )
 
     private suspend fun downloadNode(context: Context, mirror: MirrorConfig): Boolean {
@@ -322,7 +332,7 @@ object NodeDependencyManager {
 
         AppLogger.i(TAG, "Downloading Node.js runtime (${nodeUrls.size} sources)")
 
-        val downloaded = downloadWithRetry(nodeUrls, archiveFile, "Node.js $NODE_VERSION ($abi)", context)
+        val downloaded = downloadWithRetry(nodeUrls, archiveFile, "Node.js $NODE_VERSION ($abi)", context, NODE_ZIP_SHA256)
         syncEngineState()
         if (!downloaded) return false
 

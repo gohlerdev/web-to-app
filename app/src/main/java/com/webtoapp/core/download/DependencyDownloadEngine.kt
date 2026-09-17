@@ -48,7 +48,7 @@ object DependencyDownloadEngine {
     // new samples the window keeps reporting the pre-stall rate.
     private const val STALL_TIMEOUT_MS = 30_000L
 
-    enum class Outcome { SUCCESS, FAILED, SLOW }
+    enum class Outcome { SUCCESS, FAILED, SLOW, CORRUPT }
 
     val DEFAULT_TASK: TaskId = "__default__"
 
@@ -204,6 +204,8 @@ object DependencyDownloadEngine {
         displayName: String,
         context: Context? = null,
         taskId: TaskId = DEFAULT_TASK,
+        /** When set, the completed temp file must hash to this SHA-256 or the result is [Outcome.CORRUPT]. */
+        expectedSha256: String? = null,
     ): Outcome = withContext(Dispatchers.IO) {
         downloadMutex.withLock {
             val fileName = url.substringAfterLast("/")
@@ -375,6 +377,24 @@ object DependencyDownloadEngine {
                         return@withLock Outcome.FAILED
                     }
 
+                    if (expectedSha256 != null) {
+                        emit(taskId, State.Verifying(displayName))
+                        val actual = sha256Of(tempFile)
+                        if (actual == null || !actual.equals(expectedSha256, ignoreCase = true)) {
+                            AppLogger.e(
+                                TAG,
+                                "$displayName 完整性校验失败: expected=${expectedSha256.take(16)}… " +
+                                    "actual=${actual?.take(16) ?: "unreadable"}… [task=$taskId]"
+                            )
+                            tempFile.delete()
+                            emit(taskId, State.Error(
+                                Strings.downloadIntegrityFailed.replaceFirst("%s", displayName)
+                            ))
+                            return@withLock Outcome.CORRUPT
+                        }
+                        AppLogger.i(TAG, "$displayName SHA-256 校验通过 [task=$taskId]")
+                    }
+
                     tempFile.renameTo(destFile)
                     AppLogger.i(TAG, "$displayName 下载完成: ${destFile.length()} 字节")
                     Outcome.SUCCESS
@@ -408,6 +428,10 @@ object DependencyDownloadEngine {
      * - SLOW: the source is abandoned immediately but .tmp is kept, so the next
      *   mirror resumes from the stalled byte offset. On the last source a SLOW
      *   abort is retried — each resume still makes forward progress.
+     * - CORRUPT (digest mismatch, only when [expectedSha256For] resolves a pin
+     *   for the URL): fully-downloaded-but-wrong bytes. Retrying the same URL
+     *   cannot fix wrong content, so the tmp is dropped and the next source
+     *   starts immediately.
      */
     suspend fun downloadFileWithFallback(
         urls: List<String>,
@@ -416,8 +440,10 @@ object DependencyDownloadEngine {
         context: Context? = null,
         maxRetryPerUrl: Int = 2,
         retryDelayMs: Long = 2_000L,
+        /** Resolves the pinned SHA-256 for a URL (null = unpinned, e.g. moving `latest` targets). */
+        expectedSha256For: ((url: String) -> String?)? = null,
         fetch: suspend (url: String, sourceName: String) -> Outcome = { url, sourceName ->
-            downloadFileEx(url, destFile, sourceName, context)
+            downloadFileEx(url, destFile, sourceName, context, expectedSha256 = expectedSha256For?.invoke(url))
         },
     ): Boolean {
         var lastOutcome = Outcome.FAILED
@@ -433,6 +459,20 @@ object DependencyDownloadEngine {
                 if (lastOutcome == Outcome.SUCCESS) return true
 
                 val hasMoreSources = urlIndex < urls.lastIndex
+
+                if (lastOutcome == Outcome.CORRUPT) {
+                    File(destFile.parentFile, "${destFile.name}.tmp").delete()
+                    if (hasMoreSources) {
+                        AppLogger.w(TAG, "$sourceName 内容校验失败，切换下一源")
+                        publishState(State.Idle)
+                        break
+                    }
+                    emit(DEFAULT_TASK, State.Error(
+                        Strings.downloadIntegrityFailed.replaceFirst("%s", displayName)
+                    ))
+                    return false
+                }
+
                 if (lastOutcome == Outcome.SLOW) {
                     if (hasMoreSources) {
                         AppLogger.i(TAG, "$sourceName 过慢，切换下一源（保留断点）")
@@ -466,6 +506,23 @@ object DependencyDownloadEngine {
         }
         return false
     }
+
+    /** Streaming SHA-256 of a file, or null when it cannot be read. */
+    internal fun sha256Of(file: File): String? = try {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val n = input.read(buffer)
+                if (n < 0) break
+                digest.update(buffer, 0, n)
+            }
+        }
+        digest.digest().joinToString("") { "%02x".format(it) }
+    } catch (_: Exception) {
+        null
+    }
+
 
     fun formatSpeed(bytesPerSec: Long): String {
         return when {
