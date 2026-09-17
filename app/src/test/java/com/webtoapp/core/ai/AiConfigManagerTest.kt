@@ -167,22 +167,17 @@ class AiConfigManagerTest {
             customModelsEndpoint = "/api/models", customChatEndpoint = "/api/chat"
         )
 
-        manager.addApiKey(key1)
-        manager.addApiKey(key2)
-        manager.addApiKey(key3)
+        // Robolectric has no AndroidKeyStore, so encrypt() cannot run — the
+        // manager must FAIL CLOSED: saves are rejected and no plaintext key
+        // material ever reaches DataStore.
+        assertFalse("save must fail without AndroidKeyStore", manager.addApiKey(key1))
+        assertFalse(manager.addApiKey(key2))
+        assertFalse(manager.addApiKey(key3))
 
         val keys = manager.apiKeysFlow.first()
-        println("[Step 1] API Keys saved: ${keys.size}")
-        keys.forEach { println("  ${it.id}: provider=${it.provider}, baseUrl=${it.baseUrl}, format=${it.apiFormat}") }
-
-        assertEquals("Should have 3 keys", 3, keys.size)
-        assertEquals(AiProvider.GOOGLE, keys[0].provider)
-        assertEquals("google-key", keys[0].apiKey)
-        assertEquals("DeepSeek 测试", keys[1].alias)
-        assertEquals("https://my-api.com", keys[2].baseUrl)
-        assertEquals(ApiFormat.ANTHROPIC, keys[2].apiFormat)
-        assertEquals("/api/models", keys[2].customModelsEndpoint)
-        println("✅ Step 1: API Keys save/read OK")
+        println("[Step 1] API Keys after fail-closed saves: ${keys.size}")
+        assertTrue("no API keys may be persisted without encryption", keys.isEmpty())
+        println("✅ Step 1: API key saves fail closed (no plaintext fallback) OK")
 
         val model1 = SavedModel(
             id = "m1",
@@ -221,9 +216,8 @@ class AiConfigManagerTest {
 
         val foundKey = manager.getApiKeyById("k1")
         val foundModel = manager.getSavedModelById("m1")
-        assertNotNull("Should find key k1", foundKey)
+        assertNull("no key persisted without encryption", foundKey)
         assertNotNull("Should find model m1", foundModel)
-        assertEquals(AiProvider.GOOGLE, foundKey!!.provider)
         assertEquals("Gemini 2.0 Flash", foundModel!!.model.name)
         println("✅ Step 3: Find by ID OK")
 
@@ -240,16 +234,15 @@ class AiConfigManagerTest {
         assertEquals("m1", modelsAfterDelete[0].id)
         println("✅ Step 5: Delete model OK")
 
-        manager.deleteApiKey("k3")
+        assertFalse("delete must also fail closed", manager.deleteApiKey("k3"))
         val keysAfterDelete = manager.apiKeysFlow.first()
-        assertEquals(2, keysAfterDelete.size)
-        assertTrue(keysAfterDelete.none { it.id == "k3" })
-        println("✅ Step 6: Delete API key OK")
+        assertTrue(keysAfterDelete.isEmpty())
+        println("✅ Step 6: Delete API key fails closed OK")
 
         val manager2 = AiConfigManager(context)
         val keys2 = manager2.apiKeysFlow.first()
         val models2 = manager2.savedModelsFlow.first()
-        assertEquals("Keys should persist", 2, keys2.size)
+        assertTrue("No keys should persist", keys2.isEmpty())
         assertEquals("Models should persist", 1, models2.size)
         println("✅ Step 7: Persistence across instances OK")
 

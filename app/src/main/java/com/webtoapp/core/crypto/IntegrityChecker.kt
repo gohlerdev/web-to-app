@@ -11,16 +11,12 @@ class IntegrityChecker(private val context: Context) {
 
     companion object {
         private const val TAG = "IntegrityChecker"
-
-        private const val EXPECTED_SIGNATURE_PLACEHOLDER = "SIGNATURE_HASH_PLACEHOLDER_DO_NOT_MODIFY"
     }
 
     private val keyManager = KeyManager.getInstance(context)
 
     fun check(): IntegrityResult {
         val results = mutableListOf<CheckItem>()
-
-        results.add(checkSignature())
 
         results.add(checkDebugMode())
 
@@ -50,36 +46,11 @@ class IntegrityChecker(private val context: Context) {
     }
 
     fun quickCheck(): Boolean {
-
         if (isEmulator()) {
-            AppLogger.d(TAG, "Running in emulator, performing signature check only")
-            return checkSignature().passed
+            AppLogger.d(TAG, "Running in emulator, skipping debug-mode check")
+            return true
         }
-        return checkSignature().passed && checkDebugMode().passed
-    }
-
-    private fun checkSignature(): CheckItem {
-        return try {
-            val currentSignature = keyManager.getAppSignature()
-            val currentHash = currentSignature.toHexString()
-
-            if (EXPECTED_SIGNATURE_PLACEHOLDER.contains("PLACEHOLDER")) {
-                AppLogger.d(TAG, "开发版本，跳过签名检查")
-                return CheckItem("signature", true, "开发版本")
-            }
-
-            val expectedHash = EXPECTED_SIGNATURE_PLACEHOLDER
-            val passed = currentHash.equals(expectedHash, ignoreCase = true)
-
-            CheckItem(
-                name = "signature",
-                passed = passed,
-                message = if (passed) "签名验证通过" else "签名不匹配"
-            )
-        } catch (e: Exception) {
-            AppLogger.e(TAG, "签名检查失败", e)
-            CheckItem("signature", false, "签名检查异常: ${e.message}")
-        }
+        return checkDebugMode().passed
     }
 
     private fun checkDebugMode(): CheckItem {

@@ -61,17 +61,38 @@ object PythonDependencyManager {
     private const val MUSL_VERSION = "1.2.5-r11"
     private const val MUSL_ALPINE_BRANCH = "v3.21"
 
+    /** ABI → Rust-style triple for the cpython build-standalone artifact. */
+    private val PY_TRIPLE_BY_ABI = mapOf(
+        "arm64-v8a"   to "aarch64-unknown-linux-musl",
+        "x86_64"      to "x86_64-unknown-linux-musl",
+        "armeabi-v7a" to "armv7-unknown-linux-gnueabihf",
+        "x86"         to "x86_64-unknown-linux-musl"
+    )
+
+    /**
+     * cpython-${PYTHON_FULL_VERSION}+${PYTHON_BUILD_TAG} install_only_stripped
+     * tarballs, keyed by triple (digests from the astral-sh release API).
+     * Verify against the release `digest` field when bumping PYTHON_BUILD_TAG —
+     * mismatches fail the download loudly.
+     */
+    private val CPYTHON_SHA256_BY_TRIPLE = mapOf(
+        "aarch64-unknown-linux-musl"      to "11d463be3e2d34ea67722acfd8f3f2d6d6e5b6b4d4ab27240f220628134a0141",
+        "x86_64-unknown-linux-musl"       to "f25064ecb3b07cfe2440b178e72001cf1e0d69a5e53625ca3a32b7ae4e2fdcc6",
+        "armv7-unknown-linux-gnueabihf"   to "a5bb63bdd6694477ce8335d57e4c6d032a011fea64396196fe3aca178e2495e5"
+    )
+
+    /** musl-$MUSL_VERSION .apk digests (Alpine v3.21 APKINDEX), keyed by device ABI. */
+    private val MUSL_SHA256_BY_ABI = mapOf(
+        "arm64-v8a" to "721010e6bff908878d9c527428598661be59dde0d9f013f8431d01fd4dd16652",
+        "x86_64"    to "61e84757a8bfbc0d7fa8f4ce6de9cd4d791714369d78f6a08e5b03510fb2a623",
+        "x86"       to "61e84757a8bfbc0d7fa8f4ce6de9cd4d791714369d78f6a08e5b03510fb2a623"
+    )
+
     enum class MirrorRegion { CN, GLOBAL }
 
     private fun getPythonUrl(abi: String): String {
 
-        val tripleMap = mapOf(
-            "arm64-v8a"   to "aarch64-unknown-linux-musl",
-            "x86_64"      to "x86_64-unknown-linux-musl",
-            "armeabi-v7a" to "armv7-unknown-linux-gnueabihf",
-            "x86"         to "x86_64-unknown-linux-musl"
-        )
-        val triple = tripleMap[abi] ?: "aarch64-unknown-linux-musl"
+        val triple = PY_TRIPLE_BY_ABI[abi] ?: "aarch64-unknown-linux-musl"
 
         return "https://github.com/astral-sh/python-build-standalone/releases/download/$PYTHON_BUILD_TAG/cpython-${PYTHON_FULL_VERSION}+${PYTHON_BUILD_TAG}-${triple}-install_only_stripped.tar.gz"
     }
@@ -1006,9 +1027,11 @@ sys.exit(main())
         urls: List<String>,
         destFile: File,
         displayName: String,
-        context: Context?
+        context: Context?,
+        expectedSha256: String? = null
     ): Boolean = DependencyDownloadEngine.downloadFileWithFallback(
-        urls, destFile, displayName, context, MAX_RETRY_PER_URL, RETRY_DELAY_MS
+        urls, destFile, displayName, context, MAX_RETRY_PER_URL, RETRY_DELAY_MS,
+        expectedSha256For = expectedSha256?.let { hash -> { _: String -> hash } }
     )
 
     private suspend fun downloadPython(context: Context, mirror: MirrorConfig, abi: String): Boolean {
@@ -1019,7 +1042,10 @@ sys.exit(main())
 
         AppLogger.i(TAG, "Downloading Python runtime (${pythonUrls.size} sources)")
 
-        val downloaded = downloadWithRetry(pythonUrls, archiveFile, "Python $PYTHON_FULL_VERSION ($abi)", context)
+        val downloaded = downloadWithRetry(
+            pythonUrls, archiveFile, "Python $PYTHON_FULL_VERSION ($abi)", context,
+            expectedSha256 = PY_TRIPLE_BY_ABI[abi]?.let { CPYTHON_SHA256_BY_TRIPLE[it] }
+        )
         syncEngineState()
         if (!downloaded) return false
 
@@ -1116,7 +1142,7 @@ sys.exit(main())
         try {
             AppLogger.i(TAG, "Downloading musl linker: $url")
             val apkFile = File(getDepsDir(context), "musl-${abi}.apk")
-            val downloaded = downloadWithRetry(listOf(url), apkFile, "musl linker ($abi)", context)
+            val downloaded = downloadWithRetry(listOf(url), apkFile, "musl linker ($abi)", context, MUSL_SHA256_BY_ABI[abi])
             if (!downloaded) return false
 
             val gzipStream = java.util.zip.GZIPInputStream(apkFile.inputStream().buffered())

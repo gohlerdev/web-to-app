@@ -114,8 +114,12 @@ class AabSigner(private val context: Context) {
     }
 
     private fun loadKeyAndCert(): Pair<PrivateKey, X509Certificate>? {
-        val tempPassword = "wta_aab_export_${System.currentTimeMillis()}"
-        val tempFile = File(context.cacheDir, "aab_signer_keystore.p12")
+        // Random per-export password (never a guessable timestamp) and a
+        // noBackupFilesDir location so a crash between export and the
+        // finally-delete can never leak the PKCS12 via cloud backups.
+        val tempPassword = java.math.BigInteger(130, java.security.SecureRandom()).toString(32)
+        val tempDir = context.noBackupFilesDir.also { it.mkdirs() }
+        val tempFile = File.createTempFile("aab_signer_", ".p12", tempDir)
 
         return try {
             val signer = JarSigner(context)

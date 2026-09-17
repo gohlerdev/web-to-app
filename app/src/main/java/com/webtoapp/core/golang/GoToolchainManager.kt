@@ -40,6 +40,14 @@ object GoToolchainManager {
 
     private const val GO_ARCHIVE_SIZE_BYTES = 63_740_285L
 
+    /**
+     * SHA-256 of go1.26.4.linux-arm64.tar.gz (dl.google.com `.sha256` sidecar;
+     * USTC mirrors the same bytes). Verify against the sidecar when bumping
+     * [GO_VERSION] — mismatches fail the download loudly.
+     */
+    private const val GO_ARCHIVE_SHA256 =
+        "ef758ae7c6cf9267c9c0ef080b8965f453d89ab2d25d9eb22de4405925238768"
+
     private const val MAX_RETRY_PER_URL = 2
     private const val RETRY_DELAY_MS = 2_000L
 
@@ -227,7 +235,7 @@ object GoToolchainManager {
                 val archiveFile = File(depsDir, "go-${GO_VERSION}.linux-arm64.tar.gz")
 
                 val urlList = selectGoArchiveUrls(resolvePreferChinaMirror(context))
-                val ok = downloadWithFallback(urlList, archiveFile, "Go $GO_VERSION ($abi)", context)
+                val ok = downloadWithFallback(urlList, archiveFile, "Go $GO_VERSION ($abi)", context, GO_ARCHIVE_SHA256)
                 syncEngineState()
                 if (!ok) {
                     AppLogger.e(TAG, "Go 归档下载失败")
@@ -329,8 +337,10 @@ object GoToolchainManager {
         destFile: File,
         displayName: String,
         context: Context?,
+        expectedSha256: String? = null
     ): Boolean = DependencyDownloadEngine.downloadFileWithFallback(
-        listOf(url), destFile, displayName, context, MAX_RETRY_PER_URL, RETRY_DELAY_MS
+        listOf(url), destFile, displayName, context, MAX_RETRY_PER_URL, RETRY_DELAY_MS,
+        expectedSha256For = expectedSha256?.let { hash -> { _: String -> hash } }
     )
 
     internal fun selectGoArchiveUrls(preferChinaMirror: Boolean): List<String> {
@@ -363,13 +373,15 @@ object GoToolchainManager {
         destFile: File,
         displayName: String,
         context: Context?,
+        expectedSha256: String? = null
     ): Boolean {
         if (urls.isEmpty()) {
             AppLogger.e(TAG, "$displayName 没有可用的下载源")
             return false
         }
         return DependencyDownloadEngine.downloadFileWithFallback(
-            urls, destFile, displayName, context, MAX_RETRY_PER_URL, RETRY_DELAY_MS
+            urls, destFile, displayName, context, MAX_RETRY_PER_URL, RETRY_DELAY_MS,
+            expectedSha256For = expectedSha256?.let { hash -> { _: String -> hash } }
         )
     }
 

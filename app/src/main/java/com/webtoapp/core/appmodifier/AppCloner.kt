@@ -454,8 +454,11 @@ class AppCloner(private val context: Context) {
                                 AppLogger.d("AppCloner", "AndroidManifest.xml size after modification: ${modifiedData.size} bytes")
                                 writeEntryDeflated(zipOut, entry.name, modifiedData)
                             } catch (e: Exception) {
-                                AppLogger.e("AppCloner", "Failed to modify AndroidManifest.xml: ${e.message}", e)
-                                copyEntry(zipIn, zipOut, entry)
+                                // Identity-critical: a manifest we failed to rewrite must abort
+                                // the clone (caught by cloneAndInstall -> AppModifyResult.Error),
+                                // never be copied through unmodified.
+                                AppLogger.e("AppCloner", "Failed to modify AndroidManifest.xml", e)
+                                throw IllegalStateException("AndroidManifest.xml 修改失败: ${e.message}", e)
                             }
                         }
 
