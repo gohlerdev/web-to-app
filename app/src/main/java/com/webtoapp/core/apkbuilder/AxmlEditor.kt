@@ -9,11 +9,22 @@ class AxmlEditor {
         private const val ORIGINAL_PACKAGE = "com.webtoapp"
     }
 
+    /**
+     * FAIL-LOUD: throws when neither the UTF-8 nor the UTF-16 package string
+     * could be replaced — returning unmodified bytes would silently keep the
+     * original app identity.
+     */
     fun modifyPackageName(axmlData: ByteArray, newPackageName: String): ByteArray {
         val result = axmlData.copyOf()
 
         val utf8Ok = replacePackageInUtf8(result, ORIGINAL_PACKAGE, newPackageName)
         val utf16Ok = replacePackageInUtf16(result, ORIGINAL_PACKAGE, newPackageName)
+
+        if (!utf8Ok && !utf16Ok) {
+            throw IllegalStateException(
+                "Package name string not found in manifest (utf8=$utf8Ok utf16=$utf16Ok): $ORIGINAL_PACKAGE"
+            )
+        }
 
         fixDynamicPermissionAndAuthorities(result, newPackageName)
 
