@@ -15,6 +15,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -113,7 +114,21 @@ object DependencyDownloadEngine {
         }
     }
 
-    private val _paused = AtomicBoolean(false)
+    /**
+     * Pause / cancel flags of one in-flight download. They belong to the run,
+     * not to the task name: [pause] / [resume] / [cancel] only reach the run
+     * that currently owns the task id, so a control action can never abort a
+     * different download. A task with no registered run has nothing to control
+     * / callers stop work that has not started yet by cancelling their own
+     * coroutine, which this engine honours as a CancellationException.
+     */
+    private class RunControl {
+        val paused = AtomicBoolean(false)
+        val cancelled = AtomicBoolean(false)
+    }
+
+    private val runs = ConcurrentHashMap<TaskId, RunControl>()
+
     private val downloadMutex = Mutex()
 
     val isActive: Boolean get() = _state.value is State.Downloading || _state.value is State.Paused
@@ -165,7 +180,8 @@ object DependencyDownloadEngine {
 
     fun pause(taskId: TaskId = DEFAULT_TASK) {
         val dl = stateFor(taskId) as? State.Downloading ?: return
-        _paused.set(true)
+        val control = runs[taskId] ?: return
+        control.paused.set(true)
         emit(taskId, State.Paused(
             url = dl.url,
             displayName = dl.displayName,
@@ -179,20 +195,20 @@ object DependencyDownloadEngine {
     }
 
     fun resume(taskId: TaskId = DEFAULT_TASK) {
-        _paused.set(false)
-        AppLogger.i(TAG, "下载已继续 [task=$taskId]")
+        runs[taskId]?.paused?.set(false)
+        AppLogger.i(TAG, "\u4e0b\u8f7d\u5df2\u7ee7\u7eed [task=$taskId]")
     }
 
     fun reset(taskId: TaskId = DEFAULT_TASK) {
-        _paused.set(false)
+        runs[taskId]?.paused?.set(false)
         emit(taskId, State.Idle)
     }
 
-    private val _cancelled = AtomicBoolean(false)
-
     fun cancel(taskId: TaskId = DEFAULT_TASK) {
-        _cancelled.set(true)
-        _paused.set(false)
+        runs[taskId]?.let { control ->
+            control.cancelled.set(true)
+            control.paused.set(false)
+        }
         emit(taskId, State.Idle)
         _states.value = _states.value - taskId
         AppLogger.i(TAG, "下载已取消 [task=$taskId]")
@@ -209,7 +225,7 @@ object DependencyDownloadEngine {
     ): Outcome = withContext(Dispatchers.IO) {
         downloadMutex.withLock {
             val fileName = url.substringAfterLast("/")
-            val tempFile = File(destFile.parentFile, "${destFile.name}.tmp")
+            val tempFile = tempFileFor(destFile)
             var downloadedBytes = 0L
             val startTime = System.currentTimeMillis()
             val speedTracker = SpeedTracker()
@@ -218,18 +234,40 @@ object DependencyDownloadEngine {
             val watchdogDone = java.util.concurrent.atomic.AtomicBoolean(false)
             val lastProgressAt = java.util.concurrent.atomic.AtomicLong(startTime)
 
-            _paused.set(false)
-            _cancelled.set(false)
+            val control = RunControl()
+            runs[taskId] = control
 
             try {
 
-                if (tempFile.exists()) {
-                    downloadedBytes = tempFile.length()
+                // Partial bytes may only ever continue the artifact that produced
+                // them. Identity is the pinned digest when the source is pinned (so
+                // mirrors serving identical bytes can hand a transfer over), and the
+                // exact URL otherwise — where a resume additionally needs a validator,
+                // so `If-Range` turns a moved artifact into a clean 200 restart
+                // instead of splicing two versions into one file.
+                var resumeValidator: String? = null
+                val partialBytes = if (tempFile.isFile) tempFile.length() else 0L
+                if (partialBytes > 0) {
+                    val meta = readResumeMeta(destFile)
+                    val sameSource = meta != null && meta.url == url
+                    val samePin = expectedSha256 != null &&
+                        meta?.sha256?.equals(expectedSha256, ignoreCase = true) == true
+                    val validator = meta?.validator?.takeIf { sameSource }
+                    if (samePin || validator != null) {
+                        downloadedBytes = partialBytes
+                        resumeValidator = validator
+                    } else {
+                        AppLogger.w(TAG, "$displayName 断点来源无法确认，丢弃 $partialBytes 字节重新下载 [task=$taskId]")
+                        discardPartial(destFile)
+                    }
+                } else {
+                    resumeMetaFor(destFile).delete()
                 }
 
                 val requestBuilder = Request.Builder().url(url)
                 if (downloadedBytes > 0) {
                     requestBuilder.addHeader("Range", "bytes=$downloadedBytes-")
+                    resumeValidator?.let { requestBuilder.addHeader("If-Range", it) }
                     AppLogger.i(TAG, "断点续传: 从 $downloadedBytes 字节继续 ($displayName)")
                 }
 
@@ -239,7 +277,7 @@ object DependencyDownloadEngine {
                     try {
                         while (!watchdogDone.get()) {
                             Thread.sleep(SLOW_POLL_MS)
-                            if (watchdogDone.get() || _paused.get() || _cancelled.get()) continue
+                            if (watchdogDone.get() || control.paused.get() || control.cancelled.get()) continue
                             val now = System.currentTimeMillis()
                             if (now - lastProgressAt.get() > STALL_TIMEOUT_MS) {
                                 slowAbort.set(true)
@@ -274,10 +312,42 @@ object DependencyDownloadEngine {
                     val response = call.execute()
 
                     if (!response.isSuccessful && response.code != 206) {
+                        if (downloadedBytes > 0) {
+                            // The server refused the resume (416 = the partial file is
+                            // already longer than the artifact). Those bytes can never
+                            // complete this transfer, so drop them instead of re-sending
+                            // the same impossible Range on every later attempt.
+                            discardPartial(destFile)
+                            AppLogger.w(TAG, "$displayName 续传被拒绝 (HTTP ${response.code})，已清除断点 [task=$taskId]")
+                        }
                         AppLogger.e(TAG, "下载失败: HTTP ${response.code} - $url [task=$taskId]")
                         emit(taskId, State.Error(Strings.downloadFailedHttp.replace("%d", response.code.toString())))
                         response.close()
                         return@withLock Outcome.FAILED
+                    }
+
+                    // A 206 must continue exactly where the request asked it to. A
+                    // mirror answering from a different offset — or without a
+                    // verifiable Content-Range while no digest pin can catch it —
+                    // would have its bytes appended to an unrelated prefix.
+                    if (response.code == 206) {
+                        val granted = contentRangeStart(response.header("Content-Range"))
+                        val offsetVerified = granted == downloadedBytes ||
+                            (granted == null && expectedSha256 != null)
+                        if (!offsetVerified) {
+                            discardPartial(destFile)
+                            AppLogger.e(
+                                TAG,
+                                "$displayName 续传偏移不匹配: requested=$downloadedBytes granted=${granted ?: "unknown"} [task=$taskId]"
+                            )
+                            emit(taskId, State.Error(
+                                Strings.downloadNameFailed
+                                    .replaceFirst("%s", displayName)
+                                    .replaceFirst("%s", "resume offset mismatch: requested $downloadedBytes, granted ${granted ?: "unknown"}")
+                            ))
+                            response.close()
+                            return@withLock Outcome.FAILED
+                        }
                     }
 
                     val body = response.body ?: run {
@@ -300,6 +370,18 @@ object DependencyDownloadEngine {
                         }
                         totalHint.set(totalBytes)
 
+                        // Record what these bytes are while they are being written, so
+                        // a later attempt can tell whether they may be resumed at all,
+                        // and against which entity.
+                        writeResumeMeta(
+                            destFile,
+                            ResumeMeta(
+                                url = url,
+                                sha256 = expectedSha256,
+                                validator = response.header("ETag") ?: response.header("Last-Modified"),
+                            )
+                        )
+
                         val outputStream = if (response.code == 206) {
                             FileOutputStream(tempFile, true)
                         } else {
@@ -316,8 +398,8 @@ object DependencyDownloadEngine {
 
                                 while (inputStream.read(buffer).also { bytesRead = it } != -1) {
 
-                                    while (_paused.get()) {
-                                        if (_cancelled.get()) {
+                                    while (control.paused.get()) {
+                                        if (control.cancelled.get()) {
                                             throw kotlinx.coroutines.CancellationException("cancelled by user [task=$taskId]")
                                         }
                                         // Keep the stall clock alive while paused so a
@@ -326,7 +408,7 @@ object DependencyDownloadEngine {
                                         delay(PAUSE_CHECK_MS)
                                         if (!isActive) return@withLock Outcome.FAILED
                                     }
-                                    if (_cancelled.get()) {
+                                    if (control.cancelled.get()) {
                                         throw kotlinx.coroutines.CancellationException("cancelled by user [task=$taskId]")
                                     }
 
@@ -368,7 +450,7 @@ object DependencyDownloadEngine {
                     val expected = totalHint.get()
                     if (expected > 0 && tempFile.length() != expected) {
                         AppLogger.e(TAG, "$displayName 大小不匹配: expected=$expected actual=${tempFile.length()} [task=$taskId]")
-                        tempFile.delete()
+                        discardPartial(destFile)
                         emit(taskId, State.Error(
                             Strings.downloadNameFailed
                                 .replaceFirst("%s", displayName)
@@ -386,7 +468,7 @@ object DependencyDownloadEngine {
                                 "$displayName 完整性校验失败: expected=${expectedSha256.take(16)}… " +
                                     "actual=${actual?.take(16) ?: "unreadable"}… [task=$taskId]"
                             )
-                            tempFile.delete()
+                            discardPartial(destFile)
                             emit(taskId, State.Error(
                                 Strings.downloadIntegrityFailed.replaceFirst("%s", displayName)
                             ))
@@ -396,6 +478,7 @@ object DependencyDownloadEngine {
                     }
 
                     tempFile.renameTo(destFile)
+                    resumeMetaFor(destFile).delete()
                     AppLogger.i(TAG, "$displayName 下载完成: ${destFile.length()} 字节")
                     Outcome.SUCCESS
                 } finally {
@@ -417,6 +500,8 @@ object DependencyDownloadEngine {
                     emit(taskId, State.Error(Strings.downloadNameFailed.replaceFirst("%s", displayName).replaceFirst("%s", e.message ?: "")))
                     Outcome.FAILED
                 }
+            } finally {
+                runs.remove(taskId, control)
             }
         }
     }
@@ -432,6 +517,11 @@ object DependencyDownloadEngine {
      *   for the URL): fully-downloaded-but-wrong bytes. Retrying the same URL
      *   cannot fix wrong content, so the tmp is dropped and the next source
      *   starts immediately.
+     *
+     * Kept partial bytes are only ever reused by the artifact that produced
+     * them ([readResumeMeta]): a mirror switch resumes when both URLs carry the
+     * same pin, and an unpinned source resumes only while the server confirms
+     * the entity is unchanged.
      */
     suspend fun downloadFileWithFallback(
         urls: List<String>,
@@ -461,7 +551,7 @@ object DependencyDownloadEngine {
                 val hasMoreSources = urlIndex < urls.lastIndex
 
                 if (lastOutcome == Outcome.CORRUPT) {
-                    File(destFile.parentFile, "${destFile.name}.tmp").delete()
+                    discardPartial(destFile)
                     if (hasMoreSources) {
                         AppLogger.w(TAG, "$sourceName 内容校验失败，切换下一源")
                         publishState(State.Idle)
@@ -496,7 +586,7 @@ object DependencyDownloadEngine {
                     publishState(State.Idle)
                 } else {
                     if (hasMoreSources) {
-                        File(destFile.parentFile, "${destFile.name}.tmp").delete()
+                        discardPartial(destFile)
                         AppLogger.i(TAG, "$sourceName failed, switching to next source...")
                         publishState(State.Idle)
                     }
@@ -505,6 +595,61 @@ object DependencyDownloadEngine {
             }
         }
         return false
+    }
+
+    /** Temp file accumulating the partial bytes of [destFile]. */
+    private fun tempFileFor(destFile: File) = File(destFile.parentFile, "${destFile.name}.tmp")
+
+    /** Sidecar recording which artifact the partial bytes belong to. */
+    private fun resumeMetaFor(destFile: File) = File(destFile.parentFile, "${destFile.name}.tmp.src")
+
+    /** Drops the partial bytes of [destFile] together with their provenance. */
+    private fun discardPartial(destFile: File) {
+        tempFileFor(destFile).delete()
+        resumeMetaFor(destFile).delete()
+    }
+
+    /**
+     * Provenance of the bytes sitting in `<dest>.tmp`. A resume has to know what
+     * it is continuing: [url] is the source that wrote them, [sha256] the pin
+     * that will vet the finished file (null when the source is unpinned), and
+     * [validator] the `ETag` / `Last-Modified` the server reported, replayed as
+     * `If-Range` so a re-cut artifact restarts from zero.
+     */
+    private data class ResumeMeta(val url: String, val sha256: String?, val validator: String?)
+
+    private const val RESUME_META_VERSION = "1"
+
+    private fun writeResumeMeta(destFile: File, meta: ResumeMeta) {
+        try {
+            val fields = listOf(
+                RESUME_META_VERSION,
+                meta.url,
+                meta.sha256 ?: "",
+                meta.validator ?: "",
+            )
+            resumeMetaFor(destFile).writeText(fields.joinToString("\n") { it.replace(Regex("[\\r\\n]"), "") })
+        } catch (e: Exception) {
+            AppLogger.w(TAG, "\u65ad\u70b9\u6765\u6e90\u8bb0\u5f55\u5199\u5165\u5931\u8d25: ${e.message}")
+        }
+    }
+
+    private fun readResumeMeta(destFile: File): ResumeMeta? {
+        return try {
+            val file = resumeMetaFor(destFile)
+            if (!file.isFile) return null
+            val lines = file.readLines()
+            if (lines.size < 4 || lines[0] != RESUME_META_VERSION || lines[1].isBlank()) return null
+            ResumeMeta(lines[1], lines[2].ifBlank { null }, lines[3].ifBlank { null })
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** First byte offset of a `Content-Range: bytes <start>-<end>/<total>` header. */
+    private fun contentRangeStart(header: String?): Long? {
+        val spec = header?.trim()?.removePrefix("bytes")?.trim() ?: return null
+        return spec.substringBefore('-').trim().toLongOrNull()
     }
 
     /** Streaming SHA-256 of a file, or null when it cannot be read. */

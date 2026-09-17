@@ -42,11 +42,17 @@ object WordPressDependencyManager {
     private const val PHP_TARBALL_SHA256 =
         "d8867966340121f821591b9bb29c80a58ad77abd6cc8e0e44d1cbbb3aaedd70c"
 
-    /** SHA-256 of wordpress-${WORDPRESS_VERSION}.tar.gz (wordpress.org). */
+    /**
+     * SHA-256 of wordpress-${WORDPRESS_VERSION}.tar.gz, served byte-identically
+     * by wordpress.org and downloads.wordpress.org/release.
+     */
     private const val WORDPRESS_CORE_EN_SHA256 =
         "530c8fdeb16fb0affdb53eb727b6a04bb8d166621c20029e389cabb01a0fa921"
 
-    /** SHA-256 of wordpress-${WORDPRESS_VERSION}-zh_CN.tar.gz (cn.wordpress.org). */
+    /**
+     * SHA-256 of wordpress-${WORDPRESS_VERSION}-zh_CN.tar.gz, served
+     * byte-identically by cn.wordpress.org and zh-cn.wordpress.org.
+     */
     private const val WORDPRESS_CORE_ZH_CN_SHA256 =
         "4588f0a11feddf1b0decce1ea52a37b9d8108bf0601dafb1b37d35e0874ea38e"
 
@@ -55,16 +61,18 @@ object WordPressDependencyManager {
         "44be096a14ebcea424b5e4bf764436ec85fb067f74ab47822c4c5346df21591e"
 
     /**
-     * Pin resolver for the WordPress core URL list: exact-version URLs are
-     * pinned (zh_CN vs global digest); `latest` fallbacks are moving targets
-     * and stay unpinned — they only run when every pinned source already
-     * failed.
+     * Pin resolver for the WordPress core URL list. Every source is an
+     * exact-version artifact and therefore pinned — zh_CN mirrors to the
+     * localized digest, the rest to the global one.
+     *
+     * `latest*` URLs are deliberately absent: no digest can vet a moving
+     * target, and they do not even serve [WORDPRESS_VERSION] — when this list
+     * was pinned, latest-zh_CN was 42.8 MB against 7.0-zh_CN's 37.0 MB. Every
+     * released version stays available under its exact-version URL, so the
+     * mirrors below provide the redundancy instead.
      */
-    private fun wordpressCoreSha256For(url: String): String? = when {
-        "latest" in url -> null
-        "zh_CN" in url -> WORDPRESS_CORE_ZH_CN_SHA256
-        else -> WORDPRESS_CORE_EN_SHA256
-    }
+    private fun wordpressCoreSha256For(url: String): String =
+        if ("zh_CN" in url) WORDPRESS_CORE_ZH_CN_SHA256 else WORDPRESS_CORE_EN_SHA256
 
     data class MirrorConfig(
 
@@ -78,9 +86,9 @@ object WordPressDependencyManager {
         phpUrls = com.webtoapp.core.network.GitHubMirror.proxiedCn(PHP_GITHUB_URL),
         wordpressUrls = listOf(
             "https://cn.wordpress.org/wordpress-${WORDPRESS_VERSION}-zh_CN.tar.gz",
-            "https://cn.wordpress.org/latest-zh_CN.tar.gz",
+            "https://zh-cn.wordpress.org/wordpress-${WORDPRESS_VERSION}-zh_CN.tar.gz",
             "https://wordpress.org/wordpress-${WORDPRESS_VERSION}.tar.gz",
-            "https://wordpress.org/latest.tar.gz"
+            "https://downloads.wordpress.org/release/wordpress-${WORDPRESS_VERSION}.tar.gz"
         ),
         sqlitePluginUrl = "https://downloads.wordpress.org/plugin/"
     )
@@ -89,7 +97,7 @@ object WordPressDependencyManager {
         phpUrls = listOf(PHP_GITHUB_URL),
         wordpressUrls = listOf(
             "https://wordpress.org/wordpress-${WORDPRESS_VERSION}.tar.gz",
-            "https://wordpress.org/latest.tar.gz"
+            "https://downloads.wordpress.org/release/wordpress-${WORDPRESS_VERSION}.tar.gz"
         ),
         sqlitePluginUrl = "https://downloads.wordpress.org/plugin/"
     )
