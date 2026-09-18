@@ -196,7 +196,7 @@ object DependencyDownloadEngine {
 
     fun resume(taskId: TaskId = DEFAULT_TASK) {
         runs[taskId]?.paused?.set(false)
-        AppLogger.i(TAG, "\u4e0b\u8f7d\u5df2\u7ee7\u7eed [task=$taskId]")
+        AppLogger.i(TAG, "下载已继续 [task=$taskId]")
     }
 
     fun reset(taskId: TaskId = DEFAULT_TASK) {
