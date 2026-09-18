@@ -75,6 +75,23 @@ class PythonDependencyManagerTest {
     }
 
     @Test
+    fun `every abi downloads the cpython artifact its pinned digest verifies`() {
+        // riscv64 stands in for an ABI the triple map does not know: the URL falls
+        // back to aarch64, so the digest has to fall back with it. Resolving the two
+        // separately used to leave that download unverified.
+        for (abi in listOf("arm64-v8a", "x86_64", "armeabi-v7a", "x86", "riscv64")) {
+            val artifact = PythonDependencyManager.cpythonArtifactFor(abi)
+            val tripleInUrl = artifact.url.substringAfterLast('/')
+                .substringAfter('+')
+                .substringAfter('-')
+                .substringBefore("-install_only_stripped")
+
+            assertThat(artifact.sha256)
+                .isEqualTo(PythonDependencyManager.CPYTHON_SHA256_BY_TRIPLE[tripleInUrl])
+        }
+    }
+
+    @Test
     fun `python readiness becomes true when binary exists in downloaded dir`() {
         val binary = File(PythonDependencyManager.getPythonDir(context), "bin/python3").apply {
             parentFile?.mkdirs()

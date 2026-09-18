@@ -69,13 +69,16 @@ object PythonDependencyManager {
         "x86"         to "x86_64-unknown-linux-musl"
     )
 
+    /** Triple used when the device reports an ABI [PY_TRIPLE_BY_ABI] does not know. */
+    private const val DEFAULT_PY_TRIPLE = "aarch64-unknown-linux-musl"
+
     /**
      * cpython-${PYTHON_FULL_VERSION}+${PYTHON_BUILD_TAG} install_only_stripped
      * tarballs, keyed by triple (digests from the astral-sh release API).
      * Verify against the release `digest` field when bumping PYTHON_BUILD_TAG —
      * mismatches fail the download loudly.
      */
-    private val CPYTHON_SHA256_BY_TRIPLE = mapOf(
+    internal val CPYTHON_SHA256_BY_TRIPLE = mapOf(
         "aarch64-unknown-linux-musl"      to "11d463be3e2d34ea67722acfd8f3f2d6d6e5b6b4d4ab27240f220628134a0141",
         "x86_64-unknown-linux-musl"       to "f25064ecb3b07cfe2440b178e72001cf1e0d69a5e53625ca3a32b7ae4e2fdcc6",
         "armv7-unknown-linux-gnueabihf"   to "a5bb63bdd6694477ce8335d57e4c6d032a011fea64396196fe3aca178e2495e5"
@@ -90,11 +93,21 @@ object PythonDependencyManager {
 
     enum class MirrorRegion { CN, GLOBAL }
 
-    private fun getPythonUrl(abi: String): String {
+    /** A cpython artifact together with the digest that must verify it. */
+    internal data class CPythonArtifact(val url: String, val sha256: String)
 
-        val triple = PY_TRIPLE_BY_ABI[abi] ?: "aarch64-unknown-linux-musl"
-
-        return "https://github.com/astral-sh/python-build-standalone/releases/download/$PYTHON_BUILD_TAG/cpython-${PYTHON_FULL_VERSION}+${PYTHON_BUILD_TAG}-${triple}-install_only_stripped.tar.gz"
+    /**
+     * The cpython artifact for [abi]. URL and digest are derived from one
+     * triple so they cannot disagree: resolving the URL through the unknown-ABI
+     * fallback while a separate digest lookup returned null would download a
+     * pinnable artifact unverified.
+     */
+    internal fun cpythonArtifactFor(abi: String): CPythonArtifact {
+        val triple = PY_TRIPLE_BY_ABI[abi] ?: DEFAULT_PY_TRIPLE
+        return CPythonArtifact(
+            url = "https://github.com/astral-sh/python-build-standalone/releases/download/$PYTHON_BUILD_TAG/cpython-${PYTHON_FULL_VERSION}+${PYTHON_BUILD_TAG}-${triple}-install_only_stripped.tar.gz",
+            sha256 = CPYTHON_SHA256_BY_TRIPLE.getValue(triple)
+        )
     }
 
     private fun getMuslLinkerUrl(abi: String): String? {
@@ -124,13 +137,13 @@ object PythonDependencyManager {
     )
 
     private fun getCnMirror(abi: String): MirrorConfig = MirrorConfig(
-        pythonUrls = com.webtoapp.core.network.GitHubMirror.proxiedCn(getPythonUrl(abi)),
+        pythonUrls = com.webtoapp.core.network.GitHubMirror.proxiedCn(cpythonArtifactFor(abi).url),
         muslLinkerUrl = getMuslLinkerUrl(abi)
     )
 
     private fun getGlobalMirror(abi: String): MirrorConfig {
         return MirrorConfig(
-            pythonUrls = listOf(getPythonUrl(abi)),
+            pythonUrls = listOf(cpythonArtifactFor(abi).url),
             muslLinkerUrl = getMuslLinkerUrl(abi)
         )
     }
@@ -1044,7 +1057,7 @@ sys.exit(main())
 
         val downloaded = downloadWithRetry(
             pythonUrls, archiveFile, "Python $PYTHON_FULL_VERSION ($abi)", context,
-            expectedSha256 = PY_TRIPLE_BY_ABI[abi]?.let { CPYTHON_SHA256_BY_TRIPLE[it] }
+            expectedSha256 = cpythonArtifactFor(abi).sha256
         )
         syncEngineState()
         if (!downloaded) return false
