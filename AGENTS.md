@@ -83,7 +83,20 @@ Mental model:
 
 ### Delivery (Issue + PR + CI)
 
-Default target: [shiaho777/web-to-app](https://github.com/shiaho777/web-to-app). Prefer a pull request over direct pushes to `main` when delivering code. Human-facing wording of the same loop lives in [CONTRIBUTING.md](.github/CONTRIBUTING.md); keep those docs in sync when this process changes.
+Target: [gohlerdev/web-to-app](https://github.com/gohlerdev/web-to-app) — **the only delivery target**. Prefer a pull request over direct pushes to `main` when delivering code.
+
+**This repository is developed separately from [shiaho777/web-to-app](https://github.com/shiaho777/web-to-app).** The two share history, but they are independent projects. Never open an Issue, open a pull request, or push a branch there, and never propose that our work be merged upstream — deliver here and nowhere else. The `upstream` remote exists for read-only comparison and its push URL is disabled (`git remote set-url --push upstream no-push`); leave it that way.
+
+**CI is manual here.** Pushes and pull requests do not start a workflow run in this repository even though `.github/workflows/android-ci.yml` declares those triggers, so dispatch the run yourself and watch the `check` job:
+
+```bash
+gh workflow run "Android CI Build" -R gohlerdev/web-to-app --ref <branch>
+gh run view <id> -R gohlerdev/web-to-app --json status,jobs
+```
+
+A dispatch also starts the slow `package-apks` job; `check` is the gate that governs a merge, and the release/template path it skips is covered locally by `:shell:assembleRelease :app:syncShellTemplateApk`.
+
+Human-facing wording of the same loop lives in [CONTRIBUTING.md](.github/CONTRIBUTING.md), which still addresses contributors to the original project; keep that in mind before citing it as our process.
 
 **Language (required):** GitHub **Issues and PRs must be written in English** — titles, bodies, labels text you author, and delivery comments on the Issue/PR. Local chat with the user may be Chinese or any language; do not copy that language into Issue/PR text.
 
